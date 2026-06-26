@@ -1,4 +1,6 @@
 file_index.db
+file_index.db-wal
+file_index.db-shm
 __pycache__/
 *.pyc
 *.pyo

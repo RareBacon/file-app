@@ -141,6 +141,10 @@ class ResultDelegate(QStyledItemDelegate):
 
 # ── main window ─────────────────────────────────────────────────────────────
 class FileSageWindow(QWidget):
+    # Emitted from the indexer's background thread; the connected slot runs on
+    # the GUI thread so it's safe to touch widgets there.
+    index_done = pyqtSignal()
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("filesage")
@@ -153,6 +157,8 @@ class FileSageWindow(QWidget):
         self._debounce.setSingleShot(True)
         self._debounce.timeout.connect(self._run_search)
         self._showing_settings = False
+        self._auto_index_attempted = False
+        self.index_done.connect(self._on_index_done)
 
         self._apply_palette()
         self._build_ui()
@@ -531,7 +537,8 @@ class FileSageWindow(QWidget):
         status = backend.get_status()
         self._status_count = status.get("count", 0)
         self._status_ago = status.get("last_indexed_ago", "never")
-        if self._status_count == 0 and not status.get("indexing"):
+        if self._status_count == 0 and not status.get("indexing") and not self._auto_index_attempted:
+            self._auto_index_attempted = True
             self._first_run = True
             self._do_reindex()
         elif not self._input.text().strip():
@@ -544,13 +551,15 @@ class FileSageWindow(QWidget):
         )
         self._status_lbl.setText(msg)
         self._reindex_btn.setEnabled(False)
+        # on_done fires on the indexer's background thread, so just emit a
+        # signal — the actual widget updates happen in _on_index_done on the
+        # GUI thread.
+        backend.reindex(on_done=self.index_done.emit)
 
-        def on_done():
-            self._first_run = False
-            self._reindex_btn.setEnabled(True)
-            self._load_status()
-
-        backend.reindex(on_done=on_done)
+    def _on_index_done(self):
+        self._first_run = False
+        self._reindex_btn.setEnabled(True)
+        self._load_status()
 
     def _toggle_settings(self):
         self._showing_settings = not self._showing_settings

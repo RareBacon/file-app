@@ -278,6 +278,7 @@ class FileSageApp(App):
 
     def on_mount(self) -> None:
         self._first_run = False
+        self._auto_index_attempted = False
         self.query_one("#search-input", Input).focus()
         self._load_status()
         self._show_recent()
@@ -287,7 +288,8 @@ class FileSageApp(App):
         if status["count"] > 0:
             self.status_text = f"indexed {status['count']:,} files · {status['last_indexed_ago']}"
             self.query_one("#status-bar", Static).update(self.status_text)
-        elif not status.get("indexing"):
+        elif not status.get("indexing") and not self._auto_index_attempted:
+            self._auto_index_attempted = True
             self._first_run = True
             self.action_reindex()
 
