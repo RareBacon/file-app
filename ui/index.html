@@ -103,6 +103,7 @@ let state = {
   status: { count: 0, indexing: false, last_indexed_ago: 'never' },
   selectedIdx: -1,
   activeChip: 'all',
+  firstRun: false,
   showSettings: false,
   folders: ['C:\\Users\\Seth\\Documents', 'C:\\Users\\Seth\\Desktop', 'C:\\Users\\Seth\\Downloads'],
   fileTypes: { docs: true, pdfs: true, sheets: true, code: true, images: false },
@@ -172,6 +173,10 @@ async function loadRecent() {
 async function loadStatus() {
   try {
     state.status = await callApi('get_status');
+    if (state.status.count === 0 && !state.status.indexing) {
+      state.firstRun = true;
+      doReindex();
+    }
     render();
   } catch (e) {}
 }
@@ -190,8 +195,14 @@ async function doReindex() {
   } catch (e) {}
   // Poll until done
   const poll = setInterval(async () => {
-    await loadStatus();
-    if (!state.status.indexing) clearInterval(poll);
+    try {
+      state.status = await callApi('get_status');
+      render();
+      if (!state.status.indexing) {
+        state.firstRun = false;
+        clearInterval(poll);
+      }
+    } catch (e) { clearInterval(poll); }
   }, 500);
 }
 
@@ -283,7 +294,9 @@ function renderMain() {
   }
 
   const statusText = state.status.indexing
-    ? 'indexing...'
+    ? (state.firstRun
+        ? 'indexing your files for the first time — this may take a few minutes'
+        : 'indexing...')
     : state.status.count > 0
       ? `indexed ${state.status.count.toLocaleString()} files · ${state.status.last_indexed_ago}`
       : 'no index — click ↺ to index';

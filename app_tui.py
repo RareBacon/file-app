@@ -277,6 +277,7 @@ class FileSageApp(App):
         yield ListView(id="results-list")
 
     def on_mount(self) -> None:
+        self._first_run = False
         self.query_one("#search-input", Input).focus()
         self._load_status()
         self._show_recent()
@@ -285,9 +286,10 @@ class FileSageApp(App):
         status = backend.get_status()
         if status["count"] > 0:
             self.status_text = f"indexed {status['count']:,} files · {status['last_indexed_ago']}"
-        else:
-            self.status_text = "no index — click ↺ to index"
-        self.query_one("#status-bar", Static).update(self.status_text)
+            self.query_one("#status-bar", Static).update(self.status_text)
+        elif not status.get("indexing"):
+            self._first_run = True
+            self.action_reindex()
 
     def _show_recent(self):
         lv = self.query_one("#results-list", ListView)
@@ -379,9 +381,14 @@ class FileSageApp(App):
             backend.open_file(path)
 
     def action_reindex(self) -> None:
-        self.query_one("#status-bar", Static).update("indexing...")
+        msg = (
+            "indexing your files for the first time — this may take a few minutes"
+            if self._first_run else "indexing..."
+        )
+        self.query_one("#status-bar", Static).update(msg)
 
         def on_done():
+            self._first_run = False
             self.call_from_thread(self._load_status)
 
         backend.reindex(on_done=on_done)

@@ -325,6 +325,7 @@ class FileSageWindow(QWidget):
         self._list.itemActivated.connect(self._open_selected)
         lay.addWidget(self._list, 1)
 
+        self._first_run = False
         return panel
 
     def _make_settings_panel(self):
@@ -530,14 +531,22 @@ class FileSageWindow(QWidget):
         status = backend.get_status()
         self._status_count = status.get("count", 0)
         self._status_ago = status.get("last_indexed_ago", "never")
-        if not self._input.text().strip():
+        if self._status_count == 0 and not status.get("indexing"):
+            self._first_run = True
+            self._do_reindex()
+        elif not self._input.text().strip():
             self._refresh_list()
 
     def _do_reindex(self):
-        self._status_lbl.setText("indexing...")
+        msg = (
+            "indexing your files for the first time — this may take a few minutes"
+            if self._first_run else "indexing..."
+        )
+        self._status_lbl.setText(msg)
         self._reindex_btn.setEnabled(False)
 
         def on_done():
+            self._first_run = False
             self._reindex_btn.setEnabled(True)
             self._load_status()
 
