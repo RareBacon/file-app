@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>filesage</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #0a0a0a;
+      font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace;
+      font-size: 13px;
+      color: #e5e5e5;
+      overflow: hidden;
+    }
+    input { font-family: inherit; font-size: inherit; }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #404040; border-radius: 2px; }
+    .chip {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      border: 1px solid #262626;
+      color: #737373;
+      background: transparent;
+      cursor: pointer;
+      font-family: inherit;
+      transition: color 0.1s, border-color 0.1s;
+    }
+    .chip:hover { color: #d4d4d4; }
+    .chip.active { border-color: #f97316; color: #fb923c; }
+    .result-row {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      padding: 6px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .result-row:hover, .result-row.selected { background: #262626; }
+    .result-arrow { color: #fb923c; width: 10px; flex-shrink: 0; }
+    .result-tag { flex-shrink: 0; }
+    .result-name { color: #e5e5e5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .result-path { color: #525252; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 2; min-width: 0; }
+    .match-content { color: #525252; font-size: 10px; flex-shrink: 0; }
+    mark { background: transparent; color: #fb923c; font-weight: 600; }
+    .section-header { font-size: 11px; color: #525252; padding: 4px 2px 2px; }
+    .settings-input {
+      background: transparent;
+      border: none;
+      border-bottom: 1px solid #262626;
+      outline: none;
+      color: #e5e5e5;
+      font-family: inherit;
+      font-size: 11px;
+      padding: 2px 0;
+      width: 100%;
+    }
+    .settings-input::placeholder { color: #525252; }
+  </style>
+</head>
+<body>
+<div id="app" class="flex flex-col h-screen"></div>
+
+<script>
+// ── constants ──────────────────────────────────────────────────────────────
+const TAG = {
+  docx: { label: 'doc', cls: 'text-blue-400' },
+  doc:  { label: 'doc', cls: 'text-blue-400' },
+  pdf:  { label: 'pdf', cls: 'text-red-400' },
+  xlsx: { label: 'xls', cls: 'text-emerald-400' },
+  xls:  { label: 'xls', cls: 'text-emerald-400' },
+  py:   { label: 'py',  cls: 'text-purple-400' },
+  txt:  { label: 'txt', cls: 'text-neutral-500' },
+  js:   { label: 'js',  cls: 'text-yellow-400' },
+  ts:   { label: 'ts',  cls: 'text-blue-300' },
+  md:   { label: 'md',  cls: 'text-neutral-400' },
+  csv:  { label: 'csv', cls: 'text-emerald-300' },
+};
+const DEFAULT_TAG = { label: 'file', cls: 'text-neutral-500' };
+
+const CHIPS = [
+  { id: 'all',   label: 'all',   exts: null },
+  { id: 'doc',   label: 'doc',   exts: ['docx','doc'] },
+  { id: 'pdf',   label: 'pdf',   exts: ['pdf'] },
+  { id: 'sheet', label: 'sheet', exts: ['xlsx','xls','csv'] },
+  { id: 'code',  label: 'code',  exts: ['py','js','ts','json','html','css'] },
+  { id: 'txt',   label: 'text',  exts: ['txt','md'] },
+];
+
+// ── state ──────────────────────────────────────────────────────────────────
+let state = {
+  query: '',
+  results: [],
+  recent: { opened: [], modified: [] },
+  status: { count: 0, indexing: false, last_indexed_ago: 'never' },
+  selectedIdx: -1,
+  activeChip: 'all',
+  showSettings: false,
+  folders: ['C:\\Users\\Seth\\Documents', 'C:\\Users\\Seth\\Desktop', 'C:\\Users\\Seth\\Downloads'],
+  fileTypes: { docs: true, pdfs: true, sheets: true, code: true, images: false },
+  newFolder: '',
+  debounceTimer: null,
+};
+
+// ── helpers ────────────────────────────────────────────────────────────────
+function ext(name) {
+  const parts = name.split('.');
+  return parts.length > 1 ? parts[parts.length - 1].toLowerCase() : '';
+}
+
+function tag(name) {
+  return TAG[ext(name)] || DEFAULT_TAG;
+}
+
+function highlight(name, query) {
+  if (!query) return escHtml(name);
+  const i = name.toLowerCase().indexOf(query.toLowerCase());
+  if (i === -1) return escHtml(name);
+  return escHtml(name.slice(0, i)) + '<mark>' + escHtml(name.slice(i, i + query.length)) + '</mark>' + escHtml(name.slice(i + query.length));
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function visibleResults() {
+  const chip = CHIPS.find(c => c.id === state.activeChip);
+  if (!chip || !chip.exts) return state.results;
+  return state.results.filter(r => chip.exts.includes(ext(r.name)));
+}
+
+// ── api calls ──────────────────────────────────────────────────────────────
+async function callApi(method, ...args) {
+  // Wait for pywebview bridge if not ready yet
+  if (typeof window.pywebview === 'undefined' || typeof window.pywebview.api === 'undefined') {
+    await new Promise(resolve => {
+      const check = () => {
+        if (window.pywebview && window.pywebview.api) resolve();
+        else setTimeout(check, 50);
+      };
+      check();
+    });
+  }
+  return window.pywebview.api[method](...args);
+}
+
+async function doSearch(query) {
+  try {
+    state.results = await callApi('search', query);
+    state.selectedIdx = state.results.length > 0 ? 0 : -1;
+  } catch (e) {
+    state.results = [];
+  }
+  render();
+}
+
+async function loadRecent() {
+  try {
+    state.recent = await callApi('get_recent');
+    render();
+  } catch (e) {}
+}
+
+async function loadStatus() {
+  try {
+    state.status = await callApi('get_status');
+    render();
+  } catch (e) {}
+}
+
+async function openFile(path) {
+  try {
+    await callApi('open_file', path);
+  } catch (e) {}
+}
+
+async function doReindex() {
+  state.status.indexing = true;
+  render();
+  try {
+    await callApi('reindex');
+  } catch (e) {}
+  // Poll until done
+  const poll = setInterval(async () => {
+    await loadStatus();
+    if (!state.status.indexing) clearInterval(poll);
+  }, 500);
+}
+
+// ── event handlers ─────────────────────────────────────────────────────────
+function onQueryInput(e) {
+  state.query = e.target.value;
+  clearTimeout(state.debounceTimer);
+  if (!state.query.trim()) {
+    state.results = [];
+    state.selectedIdx = -1;
+    render();
+    return;
+  }
+  state.debounceTimer = setTimeout(() => doSearch(state.query), 150);
+}
+
+function onKeyDown(e) {
+  const visible = visibleResults();
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    state.selectedIdx = Math.min(state.selectedIdx + 1, visible.length - 1);
+    render();
+    scrollSelectedIntoView();
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    state.selectedIdx = Math.max(state.selectedIdx - 1, 0);
+    render();
+    scrollSelectedIntoView();
+  } else if (e.key === 'Enter' && state.selectedIdx >= 0) {
+    const file = visible[state.selectedIdx];
+    if (file) openFile(file.path);
+  } else if (e.key === 'Escape') {
+    if (state.showSettings) {
+      state.showSettings = false;
+      render();
+    }
+  }
+}
+
+function scrollSelectedIntoView() {
+  const el = document.querySelector('.result-row.selected');
+  if (el) el.scrollIntoView({ block: 'nearest' });
+}
+
+// ── render ─────────────────────────────────────────────────────────────────
+function render() {
+  const app = document.getElementById('app');
+  app.innerHTML = state.showSettings ? renderSettings() : renderMain();
+  attachHandlers();
+}
+
+function renderMain() {
+  const visible = visibleResults();
+  const hasQuery = state.query.trim().length > 0;
+
+  const chipHtml = CHIPS.map(c =>
+    `<button class="chip ${state.activeChip === c.id ? 'active' : ''}" data-chip="${c.id}">${c.label}</button>`
+  ).join('');
+
+  let bodyHtml;
+  if (hasQuery) {
+    const rows = visible.map((f, i) => {
+      const t = tag(f.name);
+      const sel = i === state.selectedIdx;
+      const arrow = sel ? '>' : ' ';
+      const contentMark = f.match_type === 'content' ? '<span class="match-content">[~]</span>' : '';
+      return `<div class="result-row ${sel ? 'selected' : ''}" data-idx="${i}" data-path="${escHtml(f.path)}">
+        <span class="result-arrow">${arrow}</span>
+        <span class="result-tag ${t.cls}">[${t.label}]</span>
+        <span class="result-name">${highlight(f.name, state.query)}</span>
+        ${contentMark}
+        <span class="result-path">${escHtml(f.path)}</span>
+      </div>`;
+    }).join('');
+
+    bodyHtml = `
+      <div class="section-header px-2"># ${visible.length} match${visible.length !== 1 ? 'es' : ''}</div>
+      <div id="results" class="overflow-y-auto flex-1 px-2 pb-2">${rows}</div>`;
+  } else {
+    const openedRows = state.recent.opened.map(f => recentRow(f)).join('');
+    const modifiedRows = state.recent.modified.map(f => recentRow(f)).join('');
+    bodyHtml = `
+      <div id="results" class="overflow-y-auto flex-1 px-2 pb-2">
+        <div class="section-header"># recently opened</div>
+        ${openedRows || '<div class="result-path px-2 py-1">—</div>'}
+        <div class="section-header mt-3"># recently modified</div>
+        ${modifiedRows || '<div class="result-path px-2 py-1">—</div>'}
+      </div>`;
+  }
+
+  const statusText = state.status.indexing
+    ? 'indexing...'
+    : state.status.count > 0
+      ? `indexed ${state.status.count.toLocaleString()} files · ${state.status.last_indexed_ago}`
+      : 'no index — click ↺ to index';
+
+  return `
+    <!-- title bar -->
+    <div class="flex items-center justify-between px-4 py-2 bg-neutral-900 border-b border-neutral-800 flex-shrink-0">
+      <div class="flex items-center gap-2">
+        <span class="w-3 h-3 rounded-full bg-red-500 flex-shrink-0"></span>
+        <span class="w-3 h-3 rounded-full bg-yellow-500 flex-shrink-0"></span>
+        <span class="w-3 h-3 rounded-full bg-green-500 flex-shrink-0"></span>
+        <span class="ml-2 text-neutral-500 text-xs">seth's sage — filesage</span>
+      </div>
+      <button id="btn-settings" class="text-neutral-500 hover:text-orange-400 text-lg leading-none" title="settings">⚙</button>
+    </div>
+
+    <!-- search prompt -->
+    <div class="flex items-center gap-1.5 px-4 pt-4 pb-2 flex-shrink-0">
+      <span class="text-orange-400 select-none">user@pc</span>
+      <span class="text-neutral-600 select-none">~</span>
+      <span class="text-neutral-500 select-none">$</span>
+      <input
+        id="search-input"
+        type="text"
+        value="${escHtml(state.query)}"
+        placeholder="search..."
+        autocomplete="off"
+        spellcheck="false"
+        class="flex-1 bg-transparent outline-none text-neutral-100 placeholder-neutral-600"
+      />
+      <button id="btn-reindex" class="text-neutral-600 hover:text-orange-400 text-sm" title="reindex">
+        ${state.status.indexing ? '<span class="animate-spin inline-block">↺</span>' : '↺'}
+      </button>
+    </div>
+
+    <!-- filter chips -->
+    <div class="flex items-center gap-1 px-4 pb-3 flex-wrap flex-shrink-0">
+      ${chipHtml}
+    </div>
+
+    <!-- status -->
+    <div class="px-4 pb-2 text-neutral-600 text-xs flex-shrink-0">${statusText}</div>
+
+    <!-- body -->
+    <div class="flex flex-col flex-1 min-h-0 px-2">
+      ${bodyHtml}
+    </div>
+  `;
+}
+
+function recentRow(f) {
+  const t = tag(f.name);
+  return `<div class="result-row" data-path="${escHtml(f.path)}">
+    <span class="result-arrow"> </span>
+    <span class="result-tag ${t.cls}">[${t.label}]</span>
+    <span class="result-name">${escHtml(f.name)}</span>
+    <span class="result-path">${escHtml(f.path)}</span>
+  </div>`;
+}
+
+function renderSettings() {
+  const folderRows = state.folders.map((f, i) =>
+    `<div class="flex items-center justify-between gap-2 py-1">
+      <span class="text-neutral-200 text-xs truncate">${escHtml(f)}</span>
+      <button class="text-neutral-600 hover:text-red-400 flex-shrink-0 text-xs" data-remove-folder="${i}">✕</button>
+    </div>`
+  ).join('');
+
+  const typeRows = [
+    ['docs',   'Documents'],
+    ['pdfs',   'PDFs'],
+    ['sheets', 'Spreadsheets'],
+    ['code',   'Code files'],
+    ['images', 'Images'],
+  ].map(([k, label]) =>
+    `<label class="flex items-center gap-2 py-0.5 text-neutral-300 text-xs cursor-pointer">
+      <input type="checkbox" ${state.fileTypes[k] ? 'checked' : ''} data-type="${k}" class="accent-orange-500" />
+      ${label}
+    </label>`
+  ).join('');
+
+  return `
+    <!-- title bar -->
+    <div class="flex items-center justify-between px-4 py-2 bg-neutral-900 border-b border-neutral-800 flex-shrink-0">
+      <div class="flex items-center gap-2">
+        <span class="w-3 h-3 rounded-full bg-red-500"></span>
+        <span class="w-3 h-3 rounded-full bg-yellow-500"></span>
+        <span class="w-3 h-3 rounded-full bg-green-500"></span>
+        <span class="ml-2 text-neutral-500 text-xs">seth's sage — filesage</span>
+      </div>
+      <button id="btn-settings" class="text-orange-400 text-lg leading-none">⚙</button>
+    </div>
+
+    <div class="p-4 overflow-y-auto flex-1">
+      <div class="flex items-center gap-2 mb-4 text-neutral-300">
+        <button id="btn-back" class="text-neutral-500 hover:text-orange-400">←</button>
+        <span># settings</span>
+      </div>
+
+      <!-- indexed folders -->
+      <div class="mb-5">
+        <div class="section-header mb-1"># indexed folders</div>
+        ${folderRows}
+        <div class="flex items-center gap-2 mt-2">
+          <span class="text-neutral-500">+</span>
+          <input
+            id="new-folder-input"
+            type="text"
+            value="${escHtml(state.newFolder)}"
+            placeholder="add folder path..."
+            class="settings-input flex-1"
+          />
+          <button id="btn-add-folder" class="text-orange-400 hover:text-orange-300 text-sm">+</button>
+        </div>
+      </div>
+
+      <!-- file types -->
+      <div class="mb-5">
+        <div class="section-header mb-1"># file types to index</div>
+        ${typeRows}
+      </div>
+
+      <!-- hotkey -->
+      <div>
+        <div class="section-header mb-1"># global hotkey</div>
+        <div class="flex items-center justify-between text-neutral-300 text-xs">
+          <span>open search window</span>
+          <span class="text-orange-400 border border-neutral-700 rounded px-2 py-0.5">Alt + Space</span>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ── wire up event listeners after each render ──────────────────────────────
+function attachHandlers() {
+  const input = document.getElementById('search-input');
+  if (input) {
+    input.addEventListener('input', onQueryInput);
+    input.addEventListener('keydown', onKeyDown);
+    // Keep focus in input unless settings is shown
+    if (!state.showSettings) {
+      // Restore caret at end
+      input.focus();
+      const len = input.value.length;
+      input.setSelectionRange(len, len);
+    }
+  }
+
+  document.getElementById('btn-settings')?.addEventListener('click', () => {
+    state.showSettings = !state.showSettings;
+    render();
+  });
+
+  document.getElementById('btn-back')?.addEventListener('click', () => {
+    state.showSettings = false;
+    render();
+  });
+
+  document.getElementById('btn-reindex')?.addEventListener('click', doReindex);
+
+  // Filter chips
+  document.querySelectorAll('[data-chip]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.activeChip = btn.dataset.chip;
+      state.selectedIdx = -1;
+      render();
+    });
+  });
+
+  // Result rows
+  document.querySelectorAll('.result-row[data-path]').forEach(row => {
+    row.addEventListener('click', () => openFile(row.dataset.path));
+    row.addEventListener('mouseenter', () => {
+      const idx = row.dataset.idx;
+      if (idx !== undefined) {
+        state.selectedIdx = parseInt(idx, 10);
+        // Lightweight re-highlight without full render
+        document.querySelectorAll('.result-row').forEach((r, i) => {
+          r.classList.toggle('selected', i === state.selectedIdx);
+          r.querySelector('.result-arrow').textContent = i === state.selectedIdx ? '>' : ' ';
+        });
+      }
+    });
+  });
+
+  // Settings: remove folder
+  document.querySelectorAll('[data-remove-folder]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const i = parseInt(btn.dataset.removeFolder, 10);
+      state.folders = state.folders.filter((_, idx) => idx !== i);
+      render();
+    });
+  });
+
+  // Settings: add folder
+  const newFolderInput = document.getElementById('new-folder-input');
+  if (newFolderInput) {
+    newFolderInput.addEventListener('input', e => { state.newFolder = e.target.value; });
+    newFolderInput.addEventListener('keydown', e => { if (e.key === 'Enter') addFolder(); });
+  }
+  document.getElementById('btn-add-folder')?.addEventListener('click', addFolder);
+
+  // Settings: file type checkboxes
+  document.querySelectorAll('[data-type]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      state.fileTypes[cb.dataset.type] = cb.checked;
+    });
+  });
+}
+
+function addFolder() {
+  const v = state.newFolder.trim();
+  if (v) {
+    state.folders.push(v);
+    state.newFolder = '';
+    render();
+  }
+}
+
+// ── boot ───────────────────────────────────────────────────────────────────
+render();
+window.addEventListener('pywebviewready', () => {
+  loadRecent();
+  loadStatus();
+});
+// Fallback if event already fired
+setTimeout(() => {
+  if (state.status.count === 0) {
+    loadRecent();
+    loadStatus();
+  }
+}, 300);
+</script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+# shared — text extraction for indexer
+pdfplumber
+python-docx
+
+# version 1 — pywebview (native window with embedded HTML)
+pywebview>=5.0
+
+# version 2 — PyQt6 (native widgets)
+PyQt6
+
+# version 3 — Textual TUI
+textual>=0.60
